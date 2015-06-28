@@ -6,26 +6,56 @@ from ConfigParser import ConfigParser
 from urlparse import urljoin
 
 import requests
+import dateutil.parser
 from skimage import io
 from requests_oauthlib import OAuth1, OAuth1Session
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
 
 OAUTH2_TOKEN_URL = "https://api.twitter.com/oauth2/token"
 REQUEST_TOKEN_URL = "https://api.twitter.com/oauth/request_token"
 BASE_AUTHORIZATION_URL = 'https://api.twitter.com/oauth/authorize'
 API_VERSION = "1.1"
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
-
 
 class FailedAPICall(Exception):
+    pass
+
+class AuthenticationLevelError(Exception):
     pass
 
 class User:
     def __init__(self, data):
         self.data = data
+        self.status = Tweet(data['status'])
     def get_profile_img(self):
         return io.imread(self.data['profile_image_url'])
-    
+    def get_background_img(self):
+        return io.imread(self.data['profile_background_image_url'])
+    def created_at(self):
+        return parser.parse(self.data['created_at'])
+     
+class Tweet:
+    def __init__(self, data):
+        self.data = data
+
+class Entities:
+    pass
+
+class Hashtag:
+    pass
+
+class Media:
+    pass
+
+class Symbol:
+    pass
+
+class URL:
+    pass
+
+class UserMention:
+    pass
 
 def flatten(it):
     '''
@@ -33,8 +63,8 @@ def flatten(it):
     '''
     for x in it:
         if (isinstance(x, list) and not isinstance(x, str)):
-                for y in flatten(x):
-                    yield y
+            for y in flatten(x):
+                yield y
         else:
             yield x
 
@@ -45,7 +75,9 @@ class API:
     The user can always iterate through the generators receiving individual
     responses, and new requests will be sent to Twitter's REST API when
     required.
-
+    
+    Authentication details can be read from a configuration file (by default
+    a file ".twitter" on the current folder)
     Example:
 
     from twitter_api import API 
@@ -56,19 +88,32 @@ class API:
     subset = [followers.next() for i in range(6000)] 
     '''
     # TODO Control the time-based request limits
-
-    def __init__(self, consumer_key=None,
-            consumer_secret=None,
-            api_version=API_VERSION,
-            config_file=".twitter"):
-        
+    # TODO Non-block version
+    # TODO Make sure that the ".twitter" file is read from the working folder,
+    #      not from the library's folder
+    def __init__(self, consumer_key=None,consumer_secret=None,
+                 api_version=API_VERSION,config_file=".twitter",
+                 use_developer_token=True):
+       
+        # Read app keys from the configuration file if required
         if (consumer_key is None) or (consumer_secret is None):
             # Load from disk
             cfg = ConfigParser()
-            cfg.read(config_file)
+            try:
+                cfg.read(config_file)
+            except:
+                raise ValueError("Can't read configuration file %s" % config_file)
+            if not cfg.has_section('keys'):
+                raise ValueError("The config file doesn't have a 'keys' section")
             consumer_key = cfg.get('keys', 'consumer_key')
             consumer_secret = cfg.get('keys', 'consumer_secret')
         
+        if use_developer_token is True:
+            logging.info('Using developer key')
+            self.access_token = cfg.get('keys', 'access_token')
+            self.access_token_secret = cfg.get('keys', 'access_token_secret')
+        
+        self.use_developer_token = use_developer_token 
         self._initialized = False
         self.consumer_secret = consumer_secret
         self.consumer_key = consumer_key
@@ -76,7 +121,17 @@ class API:
         self.api_version = api_version
         self.base_api_url = "https://api.twitter.com/%s/" % self.api_version
         self.base_streaming_url = "https://stream.twitter.com/%s/" % self.api_version
-    
+   
+    # Decorators
+    def requires_user_auth(fun):
+        def inner(*args, **kwargs):
+            if self._app_only is True:
+                raise AuthenticationLevelError("This API call requires user-level authentication")
+            else:
+                return fun(*args, **kwargs)
+        return inner
+
+    # Authentication
     def app_only_auth(self):
         '''
         Application-only authentication 
@@ -110,7 +165,22 @@ class API:
         self._initialized = True
         self._app_only = True
 
-    def auth(self):
+    def auth(self, app_only=False):
+        '''
+        User-level authorisation
+        '''
+        if app_only is True:
+            self.app_only_auth()
+        elif self.use_developer_token is True:
+            self._session = OAuth1Session(self.consumer_key, self.consumer_secret, self.access_token, self.access_token_secret)
+            self._initialized = True
+            self._app_only = False
+        else:
+            self._user_oauth()
+            self._initialized = True
+            self._app_only = False
+
+    def _user_oatuh(self):
         '''
         3-legged OAuth1 authentication
         '''
@@ -126,8 +196,9 @@ class API:
         #   token will be passed as a parameter
 
         # Step 3 - Obtain an access token
+        raise NotImplementedError()
 
-    def _prepare_headers(self):
+    def _get_requester(self):
         if self._initialized == False:
             raise Exception("Need to authenticate first")
         # Access is granted based on the Authorization field
@@ -136,14 +207,17 @@ class API:
             headers = {
                     "Authorization": "Bearer " + self.access_token
                     }
+            logging.info('Using app-level session')
+            return BasicRequester(headers)
         else:
-            raise NotImplemented("Only app-only authentication is implemented")
+            logging.info('Using OAuth1 user session')
+            return self._session
         return headers
 
     def simple_call(self, url, data={}):
-        headers = self._prepare_headers()
+        requester = self._get_requester()
         full_url = urljoin(self.base_api_url, url)
-        response = requests.get(full_url, params=data, headers=headers)
+        response = requester.get(full_url, params=data, headers=headers)
         if response.status_code == 200:
             return response.json()
         else:
@@ -154,21 +228,21 @@ class API:
         Call Twitter's endpoints with the right authorization
         '''
         # TODO: Integrate with Rx?
-        headers = self._prepare_headers()
         if stream is False:
             base_url = self.base_api_url
         else:
             base_url = self.base_streaming_url
         request_data = data.copy()
         full_url = urljoin(base_url, url)
-        return self._cursor_iter(full_url, request_data, headers)
+        return self._cursor_iter(full_url, request_data)
 
-    def _cursor_iter(self, full_url, request_data, headers):
+    def _cursor_iter(self, full_url, request_data):
         cursor = -1
         while True:
+            requester = self._get_requester()
             request_data['cursor'] = cursor
             logging.info("Sending request to %s" % full_url)
-            response = requests.get(full_url, params=request_data, headers=headers)
+            response = requester.get(full_url, params=request_data)
             if response.status_code == 200:
                 yield response
                 cursor = response.json()['next_cursor']
@@ -190,7 +264,6 @@ class API:
     def get_rate_limit_status(self):
         response = self.simple_call("application/rate_limit_status.json")
         return response
-    
         
     def _user_api_call(self, endpoint, screen_name=None, user_id=None):
         if (screen_name is None) and (user_id is None):
@@ -227,7 +300,7 @@ class API:
 
     def get_user_info(self, screen_name=None, user_id=None):
         '''
-        Retrive the information for a user / list of users
+        Retrieve the information for a user / list of users
         specified by either screen_name or user_id
         '''
         endpoint = "users/lookup.json"
@@ -243,4 +316,19 @@ class API:
             data = {"screen_name": ','.join(map(str, screen_name))}
         response = self.call(url, data)
         return [User(d) for d in response.json()]
+
+    @requires_user_auth
+    def get_home_timeline(self):
+        raise NotImplementedError()
+
+class BasicRequester():
+    '''
+    Wraps basic HTTP requests with some headers (e.g. for OAuth2 authorisation) 
+    '''
+    def __init__(self, headers):
+        self.headers = headers
+    def get(self, url, params, **kwargs):
+        return requests.get(url, params, headers=self.headers, **kwargs)
+    def post(self, url, **kwargs):
+        return requests.post(url, headers=self.headers, **kwargs)
 
