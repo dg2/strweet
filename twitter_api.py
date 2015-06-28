@@ -2,6 +2,7 @@ import base64
 import collections
 import warnings
 import logging
+import json
 from ConfigParser import ConfigParser
 from urlparse import urljoin
 
@@ -89,8 +90,12 @@ class API:
     '''
     # TODO Control the time-based request limits
     # TODO Non-block version
+    # TODO Wrap streams into Rx observables
     # TODO Make sure that the ".twitter" file is read from the working folder,
     #      not from the library's folder
+    # TODO: Centralise management of HTTP error codes
+    #       (see https://dev.twitter.com/streaming/overview/connecting for stream
+    #       error codes)
     def __init__(self, consumer_key=None,consumer_secret=None,
                  api_version=API_VERSION,config_file=".twitter",
                  use_developer_token=True):
@@ -204,11 +209,13 @@ class API:
         # Access is granted based on the Authorization field
         # in the HTTPS header
         if self._app_only is True:
+            s = requests.Session()
             headers = {
                     "Authorization": "Bearer " + self.access_token
                     }
+            s.headers.update(headers)
             logging.info('Using app-level session')
-            return BasicRequester(headers)
+            return s
         else:
             logging.info('Using OAuth1 user session')
             return self._session
@@ -227,7 +234,6 @@ class API:
         '''
         Call Twitter's endpoints with the right authorization
         '''
-        # TODO: Integrate with Rx?
         if stream is False:
             base_url = self.base_api_url
         else:
@@ -259,12 +265,51 @@ class API:
         return self.call(url, data, stream=False)
    
     def stream_call(self, url, data):
-        return self.call(url, data, stream=True)
+        # TODO: Integrate with Rx
+        # TODO: Handle different message types: https://dev.twitter.com/streaming/overview/messages-types
+        if not url.startswith("https://"):
+            base_url = self.base_streaming_url
+            full_url = urljoin(base_url, url)
+        else:
+            full_url = url
+        requester = self._get_requester()
+        response = requester.get(full_url, params=data, stream=True)
+        if response.status_code == 200:
+            return response.iter_lines()
+        elif response.status_code == 420:
+            logging.warning("Rate Limited: The client has connected too frequently")
+            raise StopIteration
+        elif response.status_code != 200:
+            raise FailedAPICall("Request to %s failed with code %i: %s" % (full_url, response.status_code, response.reason))
+
+    def get_user_stream(self, track=None, skip_preamble=True, include_followings=True):
+        endpoint = "https://userstream.twitter.com/%s/user.json" % self.api_version 
+        params = {}
+        if not track is None:
+            params.update({"track": ",".join(track)})
+        if include_followings is False:
+            params.update({"with": "user"})
+        stream = self.stream_call(endpoint, params)
+        # The user stream has a preamble consisting of a list of the user's friends
+        if skip_preamble is True:
+            stream.next()
+        return stream
 
     def get_rate_limit_status(self):
         response = self.simple_call("application/rate_limit_status.json")
         return response
-        
+       
+    @requires
+    def get_statuses_sample(self, track=None, locations=None, follow=None):
+        # TODO: Handle locations
+        # TODO: Use POST for requests with predicates to prevent
+        #       excessive URL length (https://dev.twitter.com/streaming/reference/post/statuses/filter)
+        endpoint = "https://stream.twitter.com/%s/statuses/sample.json" % self.api_version
+        params = {"follow": ",".join(follow), "track": ",".join(track)}
+        stream = self.stream_call(endpoint, params)
+        return (json.loads(status) for status in stream) 
+            
+
     def _user_api_call(self, endpoint, screen_name=None, user_id=None):
         if (screen_name is None) and (user_id is None):
             raise ValueError("Either screen_name or user_id must be set")
@@ -320,15 +365,3 @@ class API:
     @requires_user_auth
     def get_home_timeline(self):
         raise NotImplementedError()
-
-class BasicRequester():
-    '''
-    Wraps basic HTTP requests with some headers (e.g. for OAuth2 authorisation) 
-    '''
-    def __init__(self, headers):
-        self.headers = headers
-    def get(self, url, params, **kwargs):
-        return requests.get(url, params, headers=self.headers, **kwargs)
-    def post(self, url, **kwargs):
-        return requests.post(url, headers=self.headers, **kwargs)
-
