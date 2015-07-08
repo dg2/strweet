@@ -9,14 +9,17 @@ import dateutil.parser as parser
 from skimage import io
 from requests_oauthlib import OAuth1Session
 
+# Modify this line in order not to receive debug information
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
 
+# URLs
 OAUTH2_TOKEN_URL = "https://api.twitter.com/oauth2/token"
 REQUEST_TOKEN_URL = "https://api.twitter.com/oauth/request_token"
 BASE_AUTHORIZATION_URL = 'https://api.twitter.com/oauth/authorize'
 API_VERSION = "1.1"
 
 
+# Exceptions
 class FailedAPICall(Exception):
     pass
 
@@ -25,19 +28,71 @@ class AuthenticationLevelError(Exception):
     pass
 
 
+# Domain model
 class User:
     def __init__(self, data):
         self.data = data
-        self.status = Tweet(data['status'])
+        if 'status' in data:
+            self.status = Tweet(data['status'])
+        else:
+            self.status = None
 
     def get_profile_img(self):
-        return io.imread(self.data['profile_image_url'])
+        return retrieve_image(self.data['profile_image_url'])
 
     def get_background_img(self):
-        return io.imread(self.data['profile_background_image_url'])
+        return retrieve_image(self.data['profile_background_image_url'])
+
+    def get_banner_img(self):
+        return retrieve_image(self.data['profile_banner_url'])
 
     def created_at(self):
         return parser.parse(self.data['created_at'])
+
+    def user_id(self):
+        return self.data['id']
+
+    def screen_name(self):
+        return self.data['screen_name']
+
+    def name(self):
+        return self.data['name']
+
+    def location(self):
+        return self.data['location']
+
+    def num_friends(self):
+        return self.data['friends_count']
+
+    def num_followers(self):
+        return self.data['followers_count']
+
+    def description(self):
+        return self.data['description']
+
+    def has_default_image(self):
+        return self.data['default_profile_image']
+
+    def language(self):
+        return self.data['lang']
+
+    def num_tweets(self):
+        return self.data['statuses_count']
+
+    def time_zone(self):
+        return self.data['time_zone']
+
+    def utc_offset(self):
+        '''
+        Offsite from UTC time, in seconds
+        '''
+        return self.data['utc_offset']
+
+    def url(self):
+        return self.data['url']
+
+    def is_verified(self):
+        return self.data['verified']
 
 
 class Tweet:
@@ -45,9 +100,71 @@ class Tweet:
         self.data = data
         self.user = User(data['user']) if 'user' in data else None
 
+    def timestamp(self):
+        return int(self.data['timestamp_ms'])
+
+    def geolocation(self):
+        return read_geolocation(self.data['geo']) if self.data['geo'] is not None else None
+
+    def text(self):
+        return self.data['text']
+
+    def retweet_count(self):
+        return self.data['retweet_count']
+
+    def tweet_id(self):
+        return self.data['id']
+
+    def place(self):
+        return Place(self.data['place']) if self.data['place'] is not None else None
+
+
+def read_geolocation(point_json):
+    if point_json is None:
+        return None
+    elif 'coordinates' in point_json:
+        coord = point_json['coordinates']
+        return Geolocation(coord[0], coord[1])
+
+
+class Geolocation:
+    # TODO: Add functionality for plotting, distances, ...
+    def __init__(self, latitude, longitude):
+        self.latitude = latitude
+        self.longitude = longitude
+
+
+class BoundingBox:
+    def __init__(self, southwest, northeast):
+        self.sw = southwest
+        self.ne = northeast
+
+
+class Place:
+    def __init__(self, place_json):
+        self.data = place_json
+
+    def country(self):
+        return self.data['country']
+
+    def name(self):
+        return self.data['name']
+
+    def place_type(self):
+        return self.data['place_type']
+
+    def url(self):
+        return self.data['url']
+
 
 class Entities:
-    pass
+    def __init__(self, entities_json):
+        self.raw = entities_json
+        self.hashtags = self.raw['hashtags']
+        self.urls = self.raw['urls']
+        self.mentions = self.raw['user_mentions']
+        self.trends = self.raw['trends']
+        self.symbols = self.raw['symbols']
 
 
 class Media:
@@ -64,6 +181,11 @@ class URL:
 
 class UserMention:
     pass
+
+
+# Utilities
+def retrieve_image(url):
+    return io.imread(url)
 
 
 def flatten(it):
@@ -90,9 +212,7 @@ class MessageTypes:
 
 
 def message_type(msg):
-    if msg == '':
-        return MessageTypes.BLANK_LINE
-    elif 'text' in msg:  # HACK!!!
+    if 'text' in msg:  # HACK!!!
         return MessageTypes.TWEET
     elif 'delete' in msg:
         return MessageTypes.DELETE_STATUS
@@ -104,6 +224,21 @@ def message_type(msg):
         return MessageTypes.DISCONNECT
     elif 'event' in msg:
         return MessageTypes.EVENT
+
+
+def process_msg(msg):
+    '''
+    Returns a tuple of (message_type, wrapped_message)
+    '''
+    if msg == '':
+        return (MessageTypes.BLANK_LINE, None)
+    msg = json.loads(msg)
+    msg_type = message_type(msg)
+    if msg_type == MessageTypes.TWEET:
+        return (msg_type, Tweet(msg))
+    # TODO: Handle the other messages
+    else:
+        return (msg_type, msg)
 
 
 class API:
@@ -119,26 +254,37 @@ class API:
     import rx
     from twitter_api import API
 
-    api = API()
-    api.auth()
-    a = api.get_statuses_sample()
-    r = rx.Observable.from_iterable(a)
-    r.subscribe(lambda x: logging.warning(x))
+    >>> api = API()
+    >>> api.auth()
+    >>> a = api.get_statuses_sample()
+    >>> r = rx.Observable.from_iterable(a)
+    >>> r.subscribe(lambda x: logging.warning(x))
 
     Authentication details can be read from a configuration file (by default
-    a file ".twitter" on the current folder)
+    a file ".twitter" on the current folder). The structure of such a file is:
+
+    [keys]
+    CONSUMER_KEY = ...
+    CONSUMER_SECRET = ...
+    ACCESS_TOKEN = ...
+    ACCESS_TOKEN_SECRET = ...
+
+    `ACCESS_TOKEN` and `ACCESS_TOKEN_SECRET` are optional, they can be filled
+    with the developer keys to test functionality that requires user-level auth.
+
     Example:
 
-    from twitter_api import API
-    api = API()
-    api.(app_only=True)
-    followers = api.get_follower_ids(screen_name="potus")
-    # It's a very long list, Obama is a pretty cool guy. Let's get a few
-    subset = [followers.next() for i in range(6000)]
+    >>> from twitter_api import API
+    >>> api = API()
+    >>> api.auth(app_only=True)
+    >>> followers = api.get_follower_ids(screen_name="potus")
+    >>> # It's a very long list, Obama is a pretty cool guy. Let's get a few
+    >>> subset = [followers.next() for i in range(6000)]
     '''
-    # TODO Control the time-based request limits
-    # TODO Non-block version
-    # TODO Make sure that the ".twitter" file is read from the working folder,
+    # TODO: Proper user-level authentication (through codes)
+    # TODO: Control the time-based request limits
+    # TODO: Non-block version
+    # TODO: Make sure that the ".twitter" file is read from the working folder,
     #      not from the library's folder
     # TODO: Centralise management of HTTP error codes
     #       (see https://dev.twitter.com/streaming/overview/connecting for stream
@@ -311,7 +457,7 @@ class API:
     def api_call(self, url, data):
         return self.call(url, data, stream=False)
 
-    def stream_call(self, url, data=None, post=False):
+    def stream_call(self, url, data=None, post=False, process_messages=False):
         # TODO: Use GZIP compression (https://dev.twitter.com/streaming/overview/processing)
         if not url.startswith("https://"):
             base_url = self.base_streaming_url
@@ -324,7 +470,11 @@ class API:
         else:
             response = requester.post(full_url, data=data, stream=True)
         if response.status_code == 200:
-            return response.iter_lines()
+            stream = response.iter_lines()
+            if process_messages is True:
+                return (process_msg(msg) for msg in stream)
+            else:
+                return stream
         elif response.status_code == 420:
             logging.warning("Rate Limited: The client has connected too frequently")
             raise StopIteration
@@ -368,7 +518,12 @@ class API:
     # @requires_user_auth
     def get_statuses_sample(self, track=None, locations=None, follow=None, only_new_status=True):
         """
-        Return a stream with a sample of tweets, potentially satisfying some conditions
+        Return a stream with a sample of tweet events, potentially satisfying some conditions.
+
+        The stream is of the form [(msg_type, msg)], where msg_type is one of the values in
+        MessageTypes and `msg` is the message, parsed into an appropriate object if possible
+        (e.g. when `msg_type` == MessageTypes.TWEET, then the corresponding `msg` will be an instance
+        of `Tweet`)
 
         Inputs:
             - track [None]: Only get tweets which contain at least one of the keywords in this list
@@ -376,7 +531,6 @@ class API:
             - only_new_status [True]: Filter out all non-new-status (e.g. deletions) messages
         """
         # TODO: Handle locations
-        # TODO: Remove non-statuses (e.g. deletions) from the stream
         self.check_user_auth()
         endpoint_sample = "https://stream.twitter.com/%s/statuses/sample.json" % self.api_version
         endpoint_filter = "https://stream.twitter.com/%s/statuses/filter.json" % self.api_version
@@ -387,13 +541,14 @@ class API:
             params.update({"track": ",".join(track)})
         if follow or track:
             logging.info("Using POST request")
-            stream = self.stream_call(endpoint_filter, data=params, post=True)
+            stream = self.stream_call(endpoint_filter, data=params, post=True, process_messages=True)
         else:
             logging.info("Using GET request")
-            stream = self.stream_call(endpoint_sample)
-        stream = (json.loads(status) for status in stream if status != "")
+            stream = self.stream_call(endpoint_sample, process_messages=True)
+        # stream = (json.loads(status) for status in stream if status != "")  # Ignore keep-alive blank lines
         if only_new_status is True:
-            stream = (st for st in stream if message_type(st) is MessageTypes.TWEET)
+            # stream = (st for st in stream if message_type(st) is MessageTypes.TWEET)
+            stream = (x[1] for x in stream if x[0] is MessageTypes.TWEET)
         return stream
 
     def _user_api_call(self, endpoint, screen_name=None, user_id=None):
