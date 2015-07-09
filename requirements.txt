@@ -1,4 +1,4 @@
 requests
 requests-oauthlib
 scikit-image
-dateutil
+python-dateutil
