@@ -37,60 +37,78 @@ class User:
         else:
             self.status = None
 
+    @property
     def get_profile_img(self):
         return retrieve_image(self.data['profile_image_url'])
 
+    @property
     def get_background_img(self):
         return retrieve_image(self.data['profile_background_image_url'])
 
+    @property
     def get_banner_img(self):
         return retrieve_image(self.data['profile_banner_url'])
 
+    @property
     def created_at(self):
         return parser.parse(self.data['created_at'])
 
+    @property
     def user_id(self):
         return self.data['id']
 
+    @property
     def screen_name(self):
         return self.data['screen_name']
 
+    @property
     def name(self):
         return self.data['name']
 
+    @property
     def location(self):
         return self.data['location']
 
+    @property
     def num_friends(self):
         return self.data['friends_count']
 
+    @property
     def num_followers(self):
         return self.data['followers_count']
 
+    @property
     def description(self):
         return self.data['description']
 
+    @property
     def has_default_image(self):
         return self.data['default_profile_image']
 
+    @property
     def language(self):
         return self.data['lang']
 
+    @property
     def num_tweets(self):
         return self.data['statuses_count']
 
+    @property
     def time_zone(self):
         return self.data['time_zone']
 
+    @property
     def utc_offset(self):
         '''
         Offsite from UTC time, in seconds
         '''
         return self.data['utc_offset']
 
+    @property
     def url(self):
         return self.data['url']
 
+    @property
     def is_verified(self):
         return self.data['verified']
 
@@ -100,21 +118,27 @@ class Tweet:
         self.data = data
         self.user = User(data['user']) if 'user' in data else None
 
+    @property
     def timestamp(self):
         return int(self.data['timestamp_ms'])
 
+    @property
     def geolocation(self):
         return read_geolocation(self.data['geo']) if self.data['geo'] is not None else None
 
+    @property
     def text(self):
         return self.data['text']
 
+    @property
     def retweet_count(self):
         return self.data['retweet_count']
 
+    @property
     def tweet_id(self):
         return self.data['id']
 
+    @property
     def place(self):
         return Place(self.data['place']) if self.data['place'] is not None else None
 
@@ -283,7 +307,7 @@ class API:
     '''
     # TODO: Proper user-level authentication (through codes)
     # TODO: Control the time-based request limits
-    # TODO: Non-block version
+    # TODO: Non-blocking version
     # TODO: Make sure that the ".twitter" file is read from the working folder,
     #      not from the library's folder
     # TODO: Centralise management of HTTP error codes
@@ -337,6 +361,7 @@ class API:
     def app_only_auth(self):
         '''
         Application-only authentication
+        https://dev.twitter.com/oauth/application-only
 
         This type of authentication does not involve any specific user
         and thus can not access any API function that requires context
@@ -355,7 +380,8 @@ class API:
         headers = {"Authorization": "Basic " + enc,
                    "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"}
 
-        response = requests.post(OAUTH2_TOKEN_URL, data="grant_type=client_credentials", headers=headers)
+        response = requests.post(OAUTH2_TOKEN_URL, data="grant_type=client_credentials",
+                                 headers=headers)
         if response.status_code != 200:
             raise Exception("Authentication unsuccesful! Code %i, Reason: %s" % (response.status_code, response.reason))
 
@@ -458,6 +484,18 @@ class API:
         return self.call(url, data, stream=False)
 
     def stream_call(self, url, data=None, post=False, process_messages=False):
+        '''
+        Makes a call to a Twitter Streaming API endpoint
+
+        Parameters
+        ----------
+            - data [None] : Dictionary of parameters to be sent with the request
+            - post [False]: If True, the request is POST instead of GET
+            - process_messages [False]: If True, the messages are processed and the
+                output streams will contain tuples of the form (msg_type, msg), where
+                msg_type indicates the type of message and is a value from MessageTypes,
+                where msg is a wrapped representation of the message (e.g. a Tweet instance)
+        '''
         # TODO: Use GZIP compression (https://dev.twitter.com/streaming/overview/processing)
         if not url.startswith("https://"):
             base_url = self.base_streaming_url
@@ -476,8 +514,9 @@ class API:
             else:
                 return stream
         elif response.status_code == 420:
-            logging.warning("Rate Limited: The client has connected too frequently")
-            raise StopIteration
+            msg = "Rate Limited: The client has connected too frequently"
+            logging.error(msg)
+            raise StopIteration(msg)
         elif response.status_code != 200:
             raise FailedAPICall("Request to %s failed with code %i: %s" % (full_url, response.status_code, response.reason))
 
