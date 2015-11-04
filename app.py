@@ -15,7 +15,7 @@ def init():
 
 
 def clean_string(string):
-    return ' '.join(string.encode("utf-8").splitlines())
+    return ' '.join(string.encode("utf-8").splitlines()).replace('|', ' ')
 
 
 class TooLongBetweenTweets(Exception):
@@ -31,11 +31,12 @@ def process_stream(stream, h, max_elements=None, max_lapse=30):
     signal.signal(signal.SIGALRM, timeout_handler)
     for status in stream:
         # Use only english tweets
-        if status.user.language() != 'en':
+        if status.user.language != 'en':
             continue
         # geo = status.geolocation()
         counter = counter + 1
-        line = "%d|%s\n" % (status.timestamp(), clean_string(status.text()))
+        line = "%d|%s|%s\n" % (status.timestamp, clean_string(status.user.location),
+                               clean_string(status.text))
         h.write(line)
         if counter % 10 == 0:
             sys.stdout.write('.')
@@ -46,7 +47,8 @@ if __name__ == '__main__':
     # Parse arguments
     keywords = ['greece']
     filename = 'greece_tweets'
-    bufsize = 1024 * 50  # 50KB
+    # bufsize = 1024 * 50  # 50KB
+    bufsize = -1  # Use OS default
     max_lapse = 60  # Reset the connection if we don't receive any update in 60s
 
     # Initialise API
