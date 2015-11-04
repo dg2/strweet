@@ -118,6 +118,9 @@ class Tweet:
         self.data = data
         self.user = User(data['user']) if 'user' in data else None
 
+    def get(self, property):
+        return self.data.get(property)
+
     @property
     def timestamp(self):
         return int(self.data['timestamp_ms'])
@@ -407,22 +410,24 @@ class API:
     def _user_oauth(self):
         '''
         3-legged OAuth1 authentication
+        https://dev.twitter.com/oauth/3-legged
+        https://dev.twitter.com/oauth/pin-based
         '''
         # Step 1 - Obtain a client identification token
-        oauth = OAuth1Session(self.consumer_key, client_secret=self.consumer_secret)
+        oauth = OAuth1Session(self.consumer_key, client_secret=self.consumer_secret, callback_uri='oob')
         response = oauth.fetch_request_token(REQUEST_TOKEN_URL)
-        print response
+        secret = response['oauth_token_secret']
+        token = response['oauth_token']
         # Step 2 - Obtain authorization from the user
-        #   The way this works for most APIs is that the user needs to be
-        #   redirected to an URL where he can authorise the access. Once
-        #   that is done, the authentication endpoint will redirect the
-        #   user to a URL that we specify as a callback, and a verifier
-        #   token will be passed as a parameter
-
+        # We use PIN-based authentication as it seems better suited for a command line tool
+        authorize_url = 'https://api.twitter.com/oauth/authorize?oauth_token=%s' % token
+        print 'Please visit the following URL to authorize acces: %s' % authorize_url
         # Step 3 - Obtain an access token
-        raise NotImplementedError()
+        code = raw_input('Authorization code: ')
+        oauth.fetch_access_token('https://api.twitter.com/oauth/access_token', verifier=unicode(code))
         self._initialized = True
         self._app_only = False
+        self._session = oauth
 
     def _get_requester(self):
         if self._initialized is False:
@@ -470,9 +475,12 @@ class API:
             response = requester.get(full_url, params=request_data)
             if response.status_code == 200:
                 yield response
-                cursor = response.json()['next_cursor']
-                if cursor == 0:
-                    raise StopIteration
+                js = response.json()
+                if cursor in js:
+                    cursor = response.json()['next_cursor']
+                    if cursor != 0:
+                        continue
+                raise StopIteration
             if response.status_code == 429:  # Too many requests
                 # TODO Do something so that we can continue where we left once the request window is over
                 logging.warning("Too many requests. The current set of answers might be incomplete")
@@ -592,11 +600,16 @@ class API:
 
     def _user_api_call(self, endpoint, screen_name=None, user_id=None):
         if (screen_name is None) and (user_id is None):
-            raise ValueError("Either screen_name or user_id must be set")
+            if self._app_only is False:
+                logging.info('Using authenticated user')
+            else:
+                raise ValueError("Either screen_name or user_id must be set")
         if user_id is not None:
             data = {"user_id": user_id}
-        else:
+        elif screen_name is not None:
             data = {"screen_name": screen_name}
+        else:
+            data = {}
         response = self.call(endpoint, data)
         return response
 
@@ -613,7 +626,9 @@ class API:
     def get_follower_ids(self, **kwargs):
         '''
         Retrieve the list of user_ids for the followers
-        of a user specified by either screen_name or user_id
+        of a user specified by either screen_name or user_id. 
+        If no user is specified and we are authenticated
+        at user-level, then apply to the current user.
         '''
         endpoint = "followers/ids.json"
         response = self._user_api_call(endpoint, **kwargs)
@@ -640,12 +655,18 @@ class API:
             if not isinstance(user_id, list):
                 user_id = [user_id]
             data = {"user_id": ','.join(map(str, user_id))}
-        else:
+        elif screen_name is not None:
             if not isinstance(screen_name, list):
                 screen_name = [screen_name]
             data = {"screen_name": ','.join(map(str, screen_name))}
+        else:
+            data = {}
         response = self.call(endpoint, data)
-        return [User(d) for d in response.json()]
+        return (User(u) for d in response for u in d.json())
 
     def get_home_timeline(self):
         raise NotImplementedError()
+
+    def get_account_settings(self):
+        self.check_user_auth()
+        return self.call('account/settings.json', {})
