@@ -667,6 +667,26 @@ class API:
     def get_home_timeline(self):
         raise NotImplementedError()
 
+    # Account functionality
     def get_account_settings(self):
         self.check_user_auth()
-        return self.call('account/settings.json', {})
+        return self.call('account/settings.json', {}).next().json()
+
+    # Trend functionality
+    def get_trend_locations(self):
+        return self.call('trends/available.json', {}).next().json()
+
+    def get_trends_for_woeid(self, woeid):
+        return self.call('trends/place.json', {'id': woeid}).next().json()
+
+    def get_trends_for_country(self, country_name=None, country_code=None):
+        if (country_name is None) and (country_code is None):
+            raise ValueError("Must specify country_name or country_code")
+        if country_name is not None:
+            clause = lambda x: x['country'] == country_name
+        elif country_code is not None:
+            clause = lambda x: x['countryCode'] == country_code
+        locs = self.get_trend_locations()
+        valid_locs = [loc for loc in locs if clause(loc)]
+        return [self.get_trends_for_woeid(loc['woeid']) for loc in valid_locs]
+
