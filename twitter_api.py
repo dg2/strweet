@@ -1,6 +1,7 @@
 import base64
 import logging
 import json
+import webbrowser
 from ConfigParser import ConfigParser
 from urlparse import urljoin
 
@@ -422,6 +423,7 @@ class API:
         # We use PIN-based authentication as it seems better suited for a command line tool
         authorize_url = 'https://api.twitter.com/oauth/authorize?oauth_token=%s' % token
         print 'Please visit the following URL to authorize acces: %s' % authorize_url
+        webbrowser.open(authorize_url)
         # Step 3 - Obtain an access token
         code = raw_input('Authorization code: ')
         oauth.fetch_access_token('https://api.twitter.com/oauth/access_token', verifier=unicode(code))
